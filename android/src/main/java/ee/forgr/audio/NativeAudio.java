@@ -35,6 +35,7 @@ import android.content.res.AssetManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.media.AudioManager;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -1130,6 +1131,25 @@ public class NativeAudio extends Plugin implements AudioManager.OnAudioFocusChan
                 File file = new File(uri.getPath());
                 if (!file.exists()) {
                     throw new Exception(ERROR_ASSET_PATH_MISSING + " - " + assetPath);
+                }
+                if (audioChannelNum == 1) {
+                    // SoundPool decodes short local samples at preload time,
+                    // avoiding a cold AAC decoder on the first tap.
+                    MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+                    try {
+                        retriever.setDataSource(file.getAbsolutePath());
+                        String durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+                        if (durationMs != null) {
+                            long milliseconds = Long.parseLong(durationMs);
+                            if (milliseconds > 0 && milliseconds <= 1000) {
+                                return new ShortLocalAudioAsset(this, assetId, file, milliseconds / 1000.0, volume);
+                            }
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "Could not inspect short local audio; using Media3", e);
+                    } finally {
+                        retriever.release();
+                    }
                 }
                 // Use Media3 for local files as well as remote progressive
                 // audio. Android MediaPlayer's async zero-seek path can drop

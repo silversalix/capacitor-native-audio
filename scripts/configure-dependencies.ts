@@ -31,7 +31,10 @@ const CONFIG_JSON = process.env.CAPACITOR_CONFIG;
 const PLATFORM = process.env.CAPACITOR_PLATFORM_NAME;
 
 // File paths
-const gradlePropertiesPath = path.join(PLUGIN_ROOT, 'android', 'gradle.properties');
+// Capacitor runs hooks from the plugin directory, but this setting belongs to
+// the consuming Android app. Writing into a linked plugin dirties its checkout.
+const appRoot = process.env.CAPACITOR_ROOT_DIR || PLUGIN_ROOT;
+const gradlePropertiesPath = path.join(appRoot, 'android', 'gradle.properties');
 
 // ============================================================================
 // Logging Utilities

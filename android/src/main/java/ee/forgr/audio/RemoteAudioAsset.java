@@ -245,7 +245,10 @@ public class RemoteAudioAsset extends AudioAsset {
                 new Runnable() {
                     @Override
                     public void run() {
-                        if (time != 0) {
+                        // play() alone does not restart an ended ExoPlayer.
+                        // A zero-time replay needs an explicit seek back to
+                        // the beginning; a newly prepared player does not.
+                        if (time != 0 || player.getPlaybackState() == Player.STATE_ENDED) {
                             player.seekTo(Math.round(time * 1000));
                         }
                         if (volume != 0) {

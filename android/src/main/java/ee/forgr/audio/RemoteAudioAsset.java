@@ -294,15 +294,27 @@ public class RemoteAudioAsset extends AudioAsset {
                     @Override
                     public void run() {
                         cancelFade();
-                        for (ExoPlayer player : players) {
-                            if (player != null && player.isPlaying()) {
-                                player.stop();
-                                dispatchComplete();
-                            }
-                            // Reset the ExoPlayer to make it ready for future playback
-                            initializePlayer(player);
-                        }
                         isPrepared = false;
+                        for (int index = 0; index < players.size(); index++) {
+                            ExoPlayer player = players.get(index);
+                            if (player == null) continue;
+
+                            // isPlaying() can be false while ExoPlayer is still
+                            // buffering, even though playWhenReady is true.
+                            boolean wasActive = player.isPlaying() || player.getPlayWhenReady();
+                            if (wasActive) dispatchComplete();
+
+                            // Release the old instance instead of reusing it.
+                            // This cancels pending buffering and guarantees a
+                            // previous clip cannot remain attached to the
+                            // audio sink while the next clip starts.
+                            player.release();
+
+                            ExoPlayer replacement = new ExoPlayer.Builder(owner.getContext()).build();
+                            replacement.setPlaybackSpeed(1.0f);
+                            players.set(index, replacement);
+                            initializePlayer(replacement);
+                        }
                     }
                 }
             );

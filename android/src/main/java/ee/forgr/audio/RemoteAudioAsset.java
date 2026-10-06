@@ -38,8 +38,6 @@ public class RemoteAudioAsset extends AudioAsset {
     private static final float FADE_STEP = 0.05f;
     private static final int FADE_DELAY_MS = 80; // 80ms between steps
     private float initialVolume;
-    private Handler currentTimeHandler;
-    private Runnable currentTimeRunnable;
     private final Map<String, String> headers;
     private final boolean useLocalDataSource;
 
@@ -164,6 +162,7 @@ public class RemoteAudioAsset extends AudioAsset {
                 @Override
                 public void onIsPlayingChanged(boolean isPlaying) {
                     logger.debug("isPlaying changed to: " + isPlaying + ", state: " + getStateString(player.getPlaybackState()));
+                    if (isPlaying) startCurrentTimeUpdates();
                 }
 
                 @Override
@@ -204,32 +203,13 @@ public class RemoteAudioAsset extends AudioAsset {
                 new Runnable() {
                     @Override
                     public void run() {
-                        if (!isPrepared) {
-                            player.addListener(
-                                new Player.Listener() {
-                                    @Override
-                                    public void onPlaybackStateChanged(int playbackState) {
-                                        if (playbackState == Player.STATE_READY) {
-                                            isPrepared = true;
-                                            try {
-                                                playInternal(player, time, volume);
-                                                startCurrentTimeUpdates();
-                                            } catch (Exception e) {
-                                                Log.e(TAG, "Error playing after prepare", e);
-                                            }
-                                        } else if (playbackState == Player.STATE_ENDED) {
-                                            notifyCompletion();
-                                        }
-                                    }
-                                }
-                            );
-                        } else {
-                            try {
-                                playInternal(player, time, volume);
-                                startCurrentTimeUpdates();
-                            } catch (Exception e) {
-                                logger.error("Error playing", e);
-                            }
+                        try {
+                            // ExoPlayer retains playWhenReady through buffering.
+                            // A separate READY listener outlives this request
+                            // and can replay an asset after stop() cancels it.
+                            playInternal(player, time, volume);
+                        } catch (Exception e) {
+                            logger.error("Error playing", e);
                         }
                     }
                 }
@@ -239,25 +219,15 @@ public class RemoteAudioAsset extends AudioAsset {
     }
 
     private void playInternal(final ExoPlayer player, final double time, final float volume) throws Exception {
-        owner
-            .getActivity()
-            .runOnUiThread(
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        // play() alone does not restart an ended ExoPlayer.
-                        // A zero-time replay needs an explicit seek back to
-                        // the beginning; a newly prepared player does not.
-                        if (time != 0 || player.getPlaybackState() == Player.STATE_ENDED) {
-                            player.seekTo(Math.round(time * 1000));
-                        }
-                        if (volume != 0) {
-                            player.setVolume(volume);
-                        }
-                        player.play();
-                    }
-                }
-            );
+        // play() alone does not restart an ended ExoPlayer. A zero-time
+        // replay needs an explicit seek; a prepared player does not.
+        if (time != 0 || player.getPlaybackState() == Player.STATE_ENDED) {
+            player.seekTo(Math.round(time * 1000));
+        }
+        if (volume != 0) {
+            player.setVolume(volume);
+        }
+        player.play();
     }
 
     @Override
@@ -297,26 +267,19 @@ public class RemoteAudioAsset extends AudioAsset {
                     @Override
                     public void run() {
                         cancelFade();
-                        isPrepared = false;
-                        for (int index = 0; index < players.size(); index++) {
-                            ExoPlayer player = players.get(index);
+                        stopCurrentTimeUpdates();
+                        for (ExoPlayer player : players) {
                             if (player == null) continue;
 
                             // isPlaying() can be false while ExoPlayer is still
                             // buffering, even though playWhenReady is true.
                             boolean wasActive = player.isPlaying() || player.getPlayWhenReady();
+                            // Pause even during buffering. Releasing and
+                            // rebuilding here makes a short clip's next tap
+                            // pay for decoder and output-track startup again.
+                            player.pause();
+                            player.seekTo(0);
                             if (wasActive) dispatchComplete();
-
-                            // Release the old instance instead of reusing it.
-                            // This cancels pending buffering and guarantees a
-                            // previous clip cannot remain attached to the
-                            // audio sink while the next clip starts.
-                            player.release();
-
-                            ExoPlayer replacement = new ExoPlayer.Builder(owner.getContext()).build();
-                            replacement.setPlaybackSpeed(1.0f);
-                            players.set(index, replacement);
-                            initializePlayer(replacement);
                         }
                     }
                 }
@@ -837,14 +800,13 @@ public class RemoteAudioAsset extends AudioAsset {
     @Override
     protected void startCurrentTimeUpdates() {
         logger.debug("Starting timer updates");
-        if (currentTimeHandler == null) {
-            currentTimeHandler = new Handler(Looper.getMainLooper());
-        }
+        stopCurrentTimeUpdates();
+        currentTimeHandler = new Handler(Looper.getMainLooper());
         // Reset completion status for this assetId
         dispatchedCompleteMap.put(assetId, false);
 
         // Wait for player to be truly ready
-        currentTimeHandler.postDelayed(
+        currentTimeRunnable =
             new Runnable() {
                 @Override
                 public void run() {
@@ -858,9 +820,8 @@ public class RemoteAudioAsset extends AudioAsset {
                         }
                     }
                 }
-            },
-            100
-        );
+            };
+        currentTimeHandler.postDelayed(currentTimeRunnable, 100);
     }
 
     private void startTimeUpdateLoop() {

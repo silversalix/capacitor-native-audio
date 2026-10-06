@@ -88,11 +88,15 @@ public class AudioDispatcher
     }
 
     public void stop() throws Exception {
-        if (mediaPlayer.isPlaying()) {
-            mediaState = INVALID;
-            mediaPlayer.pause();
-            mediaPlayer.seekTo(0);
-        }
+        mediaState = INVALID;
+        mediaPlayer.stop();
+
+        // Re-prepare synchronously so the next play starts from position zero
+        // without another asynchronous seek. This is important for short AAC
+        // clips, where SEEK_NEXT_SYNC can skip the opening frames on some
+        // Android media stacks.
+        mediaPlayer.prepare();
+        mediaState = PREPARED;
     }
 
     public void setVolume(float volume) throws Exception {
@@ -152,7 +156,7 @@ public class AudioDispatcher
 
     private void seek(Double time) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            mediaPlayer.seekTo((int) (time * 1000), MediaPlayer.SEEK_NEXT_SYNC);
+            mediaPlayer.seekTo((int) (time * 1000), MediaPlayer.SEEK_CLOSEST);
         } else {
             mediaPlayer.seekTo((int) (time * 1000));
         }
@@ -167,6 +171,13 @@ public class AudioDispatcher
                 mediaPlayer.setLooping(false);
                 mediaState = PENDING_PLAY;
                 seek(time);
+            } else if (mediaState == PREPARED && time == 0) {
+                // A freshly prepared MediaPlayer is already positioned at
+                // zero. Starting it directly avoids an unnecessary async
+                // seek, which can drop the beginning of AAC/M4A speech clips.
+                mediaPlayer.setLooping(false);
+                mediaPlayer.start();
+                mediaState = PLAYING;
             } else {
                 if (mediaState == PREPARED) {
                     mediaState = (PENDING_PLAY);

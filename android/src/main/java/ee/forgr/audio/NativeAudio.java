@@ -1131,10 +1131,10 @@ public class NativeAudio extends Plugin implements AudioManager.OnAudioFocusChan
                 if (!file.exists()) {
                     throw new Exception(ERROR_ASSET_PATH_MISSING + " - " + assetPath);
                 }
-                ParcelFileDescriptor pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
-                AssetFileDescriptor afd = new AssetFileDescriptor(pfd, 0, AssetFileDescriptor.UNKNOWN_LENGTH);
-                AudioAsset asset = new AudioAsset(this, assetId, afd, audioChannelNum, volume);
-                return asset;
+                // Use Media3 for local files as well as remote progressive
+                // audio. Android MediaPlayer's async zero-seek path can drop
+                // the first AAC frames on older devices.
+                return new RemoteAudioAsset(this, assetId, uri, audioChannelNum, volume, null, true);
             } else {
                 // Handle unexpected URI schemes by attempting to treat as local file
                 try {

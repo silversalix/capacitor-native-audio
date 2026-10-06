@@ -9,6 +9,8 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.database.StandaloneDatabaseProvider;
+import androidx.media3.datasource.DataSource;
+import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.datasource.cache.CacheDataSource;
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor;
@@ -39,15 +41,29 @@ public class RemoteAudioAsset extends AudioAsset {
     private Handler currentTimeHandler;
     private Runnable currentTimeRunnable;
     private final Map<String, String> headers;
+    private final boolean useLocalDataSource;
 
     public RemoteAudioAsset(NativeAudio owner, String assetId, Uri uri, int audioChannelNum, float volume, Map<String, String> headers)
         throws Exception {
+        this(owner, assetId, uri, audioChannelNum, volume, headers, false);
+    }
+
+    public RemoteAudioAsset(
+        NativeAudio owner,
+        String assetId,
+        Uri uri,
+        int audioChannelNum,
+        float volume,
+        Map<String, String> headers,
+        boolean useLocalDataSource
+    ) throws Exception {
         super(owner, assetId, null, 0, volume);
         this.uri = uri;
         this.volume = volume;
         this.initialVolume = volume;
         this.players = new ArrayList<>();
         this.headers = headers;
+        this.useLocalDataSource = useLocalDataSource;
 
         if (audioChannelNum < 1) {
             audioChannelNum = 1;
@@ -92,24 +108,34 @@ public class RemoteAudioAsset extends AudioAsset {
             );
         }
 
-        // Create cached data source factory with custom headers
-        DefaultHttpDataSource.Factory httpDataSourceFactory = new DefaultHttpDataSource.Factory()
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15000)
-            .setReadTimeoutMs(15000);
+        DataSource.Factory dataSourceFactory;
+        if (useLocalDataSource) {
+            // MediaPlayer's local AAC path can lose the first frames when it
+            // performs an asynchronous seek to position zero. Media3's
+            // progressive player reads the file from the beginning without
+            // that seek, while still using the decoder already bundled for
+            // remote audio.
+            dataSourceFactory = new DefaultDataSource.Factory(owner.getContext());
+        } else {
+            // Create cached data source factory with custom headers
+            DefaultHttpDataSource.Factory httpDataSourceFactory = new DefaultHttpDataSource.Factory()
+                .setAllowCrossProtocolRedirects(true)
+                .setConnectTimeoutMs(15000)
+                .setReadTimeoutMs(15000);
 
-        // Add custom headers if provided
-        if (headers != null && !headers.isEmpty()) {
-            httpDataSourceFactory.setDefaultRequestProperties(headers);
+            // Add custom headers if provided
+            if (headers != null && !headers.isEmpty()) {
+                httpDataSourceFactory.setDefaultRequestProperties(headers);
+            }
+
+            dataSourceFactory = new CacheDataSource.Factory()
+                .setCache(cache)
+                .setUpstreamDataSourceFactory(httpDataSourceFactory)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR);
         }
 
-        CacheDataSource.Factory cacheDataSourceFactory = new CacheDataSource.Factory()
-            .setCache(cache)
-            .setUpstreamDataSourceFactory(httpDataSourceFactory)
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR);
-
         // Create media source
-        MediaSource mediaSource = new ProgressiveMediaSource.Factory(cacheDataSourceFactory).createMediaSource(MediaItem.fromUri(uri));
+        MediaSource mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(MediaItem.fromUri(uri));
 
         player.setMediaSource(mediaSource);
         player.setVolume(volume);
